@@ -1,3 +1,3 @@
-from .svhn import *
 from .mnist import *
+from .svhn import *
 from .usps import *
