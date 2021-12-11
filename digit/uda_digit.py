@@ -109,17 +109,16 @@ def digit_load(args):
                                     transforms.Normalize((0.5,), (0.5,))
                                 ]))
 
-    dset_loaders = {}
-    dset_loaders["source_tr"] = DataLoader(train_source, batch_size=train_bs, shuffle=True,
-                                           num_workers=args.worker, drop_last=False)
-    dset_loaders["source_te"] = DataLoader(test_source, batch_size=train_bs * 2, shuffle=True,
-                                           num_workers=args.worker, drop_last=False)
-    dset_loaders["target"] = DataLoader(train_target, batch_size=train_bs, shuffle=True,
-                                        num_workers=args.worker, drop_last=False)
-    dset_loaders["target_te"] = DataLoader(train_target, batch_size=train_bs, shuffle=False,
-                                           num_workers=args.worker, drop_last=False)
-    dset_loaders["test"] = DataLoader(test_target, batch_size=train_bs * 2, shuffle=False,
-                                      num_workers=args.worker, drop_last=False)
+    dset_loaders = {"source_tr": DataLoader(train_source, batch_size=train_bs, shuffle=True,
+                                            num_workers=args.worker, drop_last=False),
+                    "source_te": DataLoader(test_source, batch_size=train_bs * 2, shuffle=True,
+                                            num_workers=args.worker, drop_last=False),
+                    "target": DataLoader(train_target, batch_size=train_bs, shuffle=True,
+                                         num_workers=args.worker, drop_last=False),
+                    "target_idx": DataLoader(train_target, batch_size=train_bs, shuffle=False,
+                                            num_workers=args.worker, drop_last=False),
+                    "test": DataLoader(test_target, batch_size=train_bs * 2, shuffle=False,
+                                       num_workers=args.worker, drop_last=False)}
     return dset_loaders
 
 
@@ -160,16 +159,16 @@ def train_source(args):
                                    bottleneck_dim=args.bottleneck).cuda()
     netC = network.feat_classifier(type=args.layer, class_num=args.class_num, bottleneck_dim=args.bottleneck).cuda()
 
-    param_group = []
+    param_groups = []
     learning_rate = args.lr
-    for k, v in netF.named_parameters():
-        param_group += [{'params': v, 'lr': learning_rate}]
-    for k, v in netB.named_parameters():
-        param_group += [{'params': v, 'lr': learning_rate}]
-    for k, v in netC.named_parameters():
-        param_group += [{'params': v, 'lr': learning_rate}]
+    for name, param in netF.named_parameters():
+        param_groups += [{'params': param, 'lr': learning_rate}]
+    for name, param in netB.named_parameters():
+        param_groups += [{'params': param, 'lr': learning_rate}]
+    for name, param in netC.named_parameters():
+        param_groups += [{'params': param, 'lr': learning_rate}]
 
-    optimizer = optim.SGD(param_group)
+    optimizer = optim.SGD(param_groups,learning_rate)
     optimizer = op_copy(optimizer)
 
     acc_init = 0
@@ -180,7 +179,9 @@ def train_source(args):
     netF.train()
     netB.train()
     netC.train()
-
+    
+    iter_source = iter(dset_loaders["source_tr"])
+    
     while iter_num < max_iter:
         try:
             inputs_source, labels_source = iter_source.next()
@@ -290,14 +291,14 @@ def train_target(args):
     args.modelpath = args.output_dir + '/source_C.pt'
     netC.load_state_dict(torch.load(args.modelpath))
     netC.eval()
-    for k, v in netC.named_parameters():
-        v.requires_grad = False
+    for name, param in netC.named_parameters():
+        param.requires_grad = False
 
     param_group = []
-    for k, v in netF.named_parameters():
-        param_group += [{'params': v, 'lr': args.lr}]
-    for k, v in netB.named_parameters():
-        param_group += [{'params': v, 'lr': args.lr}]
+    for name, param in netF.named_parameters():
+        param_group += [{'params': param, 'lr': args.lr}]
+    for name, param in netB.named_parameters():
+        param_group += [{'params': param, 'lr': args.lr}]
 
     optimizer = optim.SGD(param_group)
     optimizer = op_copy(optimizer)
@@ -321,7 +322,7 @@ def train_target(args):
         if iter_num % interval_iter == 0 and args.cls_par > 0:
             netF.eval()
             netB.eval()
-            mem_label = obtain_label(dset_loaders['target_te'], netF, netB, netC, args)
+            mem_label = obtain_label(dset_loaders['target_idx'], netF, netB, netC, args)
             mem_label = torch.from_numpy(mem_label).cuda()
             netF.train()
             netB.train()
