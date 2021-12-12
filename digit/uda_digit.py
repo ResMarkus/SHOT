@@ -157,16 +157,15 @@ def train_source(args):
 
     netB = network.feat_bootleneck(type=args.classifier, feature_dim=netF.in_features,
                                    bottleneck_dim=args.bottleneck).cuda()
-    netC = network.feat_classifier(type=args.layer, class_num=args.class_num, bottleneck_dim=args.bottleneck).cuda()
+    netC = network.feat_classifier(type=args.layer, class_num=args.class_num,
+                                   bottleneck_dim=args.bottleneck).cuda()
 
-    param_groups = []
+
     learning_rate = args.lr
-    for name, param in netF.named_parameters():
-        param_groups += [{'params': param, 'lr': learning_rate}]
-    for name, param in netB.named_parameters():
-        param_groups += [{'params': param, 'lr': learning_rate}]
-    for name, param in netC.named_parameters():
-        param_groups += [{'params': param, 'lr': learning_rate}]
+
+    param_groups = [{'params': netF.parameters(), 'lr': learning_rate}] + \
+                   [{'params': netB.parameters(), 'lr': learning_rate}] + \
+                   [{'params': netC.parameters(), 'lr': learning_rate}]
 
     optimizer = optim.SGD(param_groups,learning_rate)
     optimizer = op_copy(optimizer)
@@ -179,51 +178,47 @@ def train_source(args):
     netF.train()
     netB.train()
     netC.train()
-    
-    iter_source = iter(dset_loaders["source_tr"])
-    
-    while iter_num < max_iter:
-        try:
-            inputs_source, labels_source = iter_source.next()
-        except:
-            iter_source = iter(dset_loaders["source_tr"])
-            inputs_source, labels_source = iter_source.next()
 
-        if inputs_source.size(0) == 1:
-            continue
+    source_loader = dset_loaders["source_tr"]
 
-        iter_num += 1
-        lr_scheduler(optimizer, iter_num=iter_num, max_iter=max_iter)
+    for epoch in range(args.max_epoch):
+        for step, (inputs_source, labels_source) in enumerate(source_loader):
 
-        inputs_source, labels_source = inputs_source.cuda(), labels_source.cuda()
-        outputs_source = netC(netB(netF(inputs_source)))
-        classifier_loss = loss.CrossEntropyLabelSmooth(num_classes=args.class_num, epsilon=args.smooth)(outputs_source,
-                                                                                                        labels_source)
-        optimizer.zero_grad()
-        classifier_loss.backward()
-        optimizer.step()
+            if inputs_source.size(0) == 1:
+                continue
 
-        if iter_num % interval_iter == 0 or iter_num == max_iter:
-            netF.eval()
-            netB.eval()
-            netC.eval()
-            acc_s_tr, _ = cal_acc(dset_loaders['source_tr'], netF, netB, netC)
-            acc_s_te, _ = cal_acc(dset_loaders['source_te'], netF, netB, netC)
-            log_str = 'Task: {}, Iter:{}/{}; Accuracy = {:.2f}%/ {:.2f}%'.format(args.dset, iter_num, max_iter,
-                                                                                 acc_s_tr, acc_s_te)
-            args.out_file.write(log_str + '\n')
-            args.out_file.flush()
-            print(log_str + '\n')
+            iter_num += 1
+            lr_scheduler(optimizer, iter_num=iter_num, max_iter=max_iter)
 
-            if acc_s_te >= acc_init:
-                acc_init = acc_s_te
-                best_netF = netF.state_dict()
-                best_netB = netB.state_dict()
-                best_netC = netC.state_dict()
+            inputs_source, labels_source = inputs_source.cuda(), labels_source.cuda()
+            outputs_source = netC(netB(netF(inputs_source)))
+            classifier_loss = loss.CrossEntropyLabelSmooth(num_classes=args.class_num, epsilon=args.smooth)(outputs_source,
+                                                                                                            labels_source)
+            optimizer.zero_grad()
+            classifier_loss.backward()
+            optimizer.step()
 
-            netF.train()
-            netB.train()
-            netC.train()
+            if iter_num % interval_iter == 0 or iter_num == max_iter:
+                netF.eval()
+                netB.eval()
+                netC.eval()
+                acc_s_tr, _ = cal_acc(dset_loaders['source_tr'], netF, netB, netC)
+                acc_s_te, _ = cal_acc(dset_loaders['source_te'], netF, netB, netC)
+                log_str = 'Task: {}, Iter:{}/{}; Accuracy = {:.2f}%/ {:.2f}%'.format(args.dset, iter_num, max_iter,
+                                                                                     acc_s_tr, acc_s_te)
+                args.out_file.write(log_str + '\n')
+                args.out_file.flush()
+                print(log_str + '\n')
+
+                if acc_s_te >= acc_init:
+                    acc_init = acc_s_te
+                    best_netF = netF.state_dict()
+                    best_netB = netB.state_dict()
+                    best_netC = netC.state_dict()
+
+                netF.train()
+                netB.train()
+                netC.train()
 
     torch.save(best_netF, osp.join(args.output_dir, "source_F.pt"))
     torch.save(best_netB, osp.join(args.output_dir, "source_B.pt"))
@@ -291,79 +286,75 @@ def train_target(args):
     args.modelpath = args.output_dir + '/source_C.pt'
     netC.load_state_dict(torch.load(args.modelpath))
     netC.eval()
+
     for name, param in netC.named_parameters():
         param.requires_grad = False
 
-    param_group = []
-    for name, param in netF.named_parameters():
-        param_group += [{'params': param, 'lr': args.lr}]
-    for name, param in netB.named_parameters():
-        param_group += [{'params': param, 'lr': args.lr}]
+    param_groups = [{'params': netF.parameters(), 'lr': args.lr}] + \
+                   [{'params': netB.parameters(), 'lr': args.lr}] + \
+                   [{'params': netC.parameters(), 'lr': args.lr}]
 
-    optimizer = optim.SGD(param_group)
+    optimizer = optim.SGD(param_groups,args.lr)
     optimizer = op_copy(optimizer)
 
+    target_loader=dset_loaders["target"]
     max_iter = args.max_epoch * len(dset_loaders["target"])
     interval_iter = len(dset_loaders["target"])
     # interval_iter = max_iter // args.interval
     iter_num = 0
 
-    while iter_num < max_iter:
-        optimizer.zero_grad()
-        try:
-            inputs_test, _, tar_idx = iter_test.next()
-        except:
-            iter_test = iter(dset_loaders["target"])
-            inputs_test, _, tar_idx = iter_test.next()
+    for epoch in range(args.max_epoch):
+        for step, (inputs_test, _, tar_idx) in enumerate(target_loader):
+            optimizer.zero_grad()
 
-        if inputs_test.size(0) == 1:
-            continue
+            if inputs_test.size(0) == 1:
+                continue
 
-        if iter_num % interval_iter == 0 and args.cls_par > 0:
-            netF.eval()
-            netB.eval()
-            mem_label = obtain_label(dset_loaders['target_idx'], netF, netB, netC, args)
-            mem_label = torch.from_numpy(mem_label).cuda()
-            netF.train()
-            netB.train()
+            if iter_num % interval_iter == 0 and args.cls_par > 0:
+                netF.eval()
+                netB.eval()
+                mem_label = obtain_label(dset_loaders['target_idx'], netF, netB, netC, args)
+                mem_label = torch.from_numpy(mem_label).cuda()
+                netF.train()
+                netB.train()
 
-        iter_num += 1
-        lr_scheduler(optimizer, iter_num=iter_num, max_iter=max_iter)
+            iter_num += 1
+            lr_scheduler(optimizer, iter_num=iter_num, max_iter=max_iter)
 
-        inputs_test = inputs_test.cuda()
-        features_test = netB(netF(inputs_test))
-        outputs_test = netC(features_test)
+            inputs_test = inputs_test.cuda()
+            features_test = netB(netF(inputs_test))
+            outputs_test = netC(features_test)
 
-        if args.cls_par > 0:
-            pred = mem_label[tar_idx]
-            classifier_loss = args.cls_par * nn.CrossEntropyLoss()(outputs_test, pred)
-        else:
-            classifier_loss = torch.tensor(0.0).cuda()
+            if args.cls_par > 0:
+                pred = mem_label[tar_idx]
+                classifier_loss = args.cls_par * nn.CrossEntropyLoss()(outputs_test, pred)
+            else:
+                classifier_loss = torch.tensor(0.0).cuda()
 
-        if args.ent:
-            softmax_out = nn.Softmax(dim=1)(outputs_test)
-            entropy_loss = torch.mean(loss.Entropy(softmax_out))
-            if args.gent:
-                msoftmax = softmax_out.mean(dim=0)
-                entropy_loss -= torch.sum(-msoftmax * torch.log(msoftmax + 1e-5))
+            if args.ent:
+                softmax_out = nn.Softmax(dim=1)(outputs_test)
+                entropy_loss = torch.mean(loss.Entropy(softmax_out))
+                if args.gent:
+                    msoftmax = softmax_out.mean(dim=0)
+                    entropy_loss -= torch.sum(-msoftmax * torch.log(msoftmax + 1e-5))
 
-            im_loss = entropy_loss * args.ent_par
-            classifier_loss += im_loss
+                im_loss = entropy_loss * args.ent_par
+                classifier_loss += im_loss
 
-        optimizer.zero_grad()
-        classifier_loss.backward()
-        optimizer.step()
+            optimizer.zero_grad()
+            classifier_loss.backward()
+            optimizer.step()
 
-        if iter_num % interval_iter == 0 or iter_num == max_iter:
-            netF.eval()
-            netB.eval()
-            acc, _ = cal_acc(dset_loaders['test'], netF, netB, netC)
-            log_str = 'Task: {}, Iter:{}/{}; Accuracy = {:.2f}%'.format(args.dset, iter_num, max_iter, acc)
-            args.out_file.write(log_str + '\n')
-            args.out_file.flush()
-            print(log_str + '\n')
-            netF.train()
-            netB.train()
+            if iter_num % interval_iter == 0 or iter_num == max_iter:
+                netF.eval()
+                netB.eval()
+                acc, _ = cal_acc(dset_loaders['test'], netF, netB, netC)
+                log_str = 'Task: {}, Iter:{}/{}; Accuracy = {:.2f}%'.format(args.dset, iter_num, max_iter, acc)
+                args.out_file.write(log_str + '\n')
+                args.out_file.flush()
+                print(log_str + '\n')
+                netF.train()
+                netB.train()
 
     if args.issave:
         torch.save(netF.state_dict(), osp.join(args.output_dir, "target_F_" + args.savename + ".pt"))
