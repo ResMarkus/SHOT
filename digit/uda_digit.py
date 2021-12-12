@@ -114,25 +114,22 @@ def digit_load(args):
 
 
 def cal_acc(loader, netF, netB, netC):
-    start_test = True
     with torch.no_grad():
-        iter_test = iter(loader)
-        for i in range(len(loader)):
-            data = iter_test.next()
-            inputs = data[0]
-            labels = data[1]
+        output_list=[]
+        label_list=[]
+        for inputs, labels in iter(loader):
             inputs = inputs.cuda()
             outputs = netC(netB(netF(inputs)))
-            if start_test:
-                all_output = outputs.float().cpu()
-                all_label = labels.float()
-                start_test = False
-            else:
-                all_output = torch.cat((all_output, outputs.float().cpu()), 0)
-                all_label = torch.cat((all_label, labels.float()), 0)
+            output_list.append(outputs.float().cpu())
+            label_list.append(labels.float())
+
+    all_output=torch.cat(output_list, dim=0)
+    all_label=torch.cat(label_list, dim=0)
     _, predict = torch.max(all_output, 1)
-    accuracy = torch.sum(torch.squeeze(predict).float() == all_label).item() / float(all_label.size()[0])
-    mean_ent = torch.mean(loss.Entropy(nn.Softmax(dim=1)(all_output))).cpu().data.item()
+    correct_num=torch.sum(predict.float() == all_label).item()
+    all_num=all_label.size(0)
+    accuracy = correct_num / float(all_num)
+    mean_ent = torch.mean(loss.Entropy(nn.Softmax(dim=1)(all_output))).cpu().item()
     return accuracy * 100, mean_ent
 
 
