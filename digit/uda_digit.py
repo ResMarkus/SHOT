@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from scipy.spatial.distance import cdist
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
@@ -19,16 +20,6 @@ from data_load import mnist, svhn, usps
 def op_copy(optimizer):
     for param_group in optimizer.param_groups:
         param_group['lr0'] = param_group['lr']
-    return optimizer
-
-
-def lr_scheduler(optimizer, iter_num, max_iter, gamma=10, power=0.75):
-    decay = (1 + gamma * iter_num / max_iter) ** (-power)
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = param_group['lr0'] * decay
-        param_group['weight_decay'] = 1e-3
-        param_group['momentum'] = 0.9
-        param_group['nesterov'] = True
     return optimizer
 
 
@@ -161,13 +152,11 @@ def train_source(args):
                                    bottleneck_dim=args.bottleneck).cuda()
 
 
-    learning_rate = args.lr
+    param_groups = [{'params': netF.parameters(), 'lr': args.lr}] + \
+                   [{'params': netB.parameters(), 'lr': args.lr}] + \
+                   [{'params': netC.parameters(), 'lr': args.lr}]
 
-    param_groups = [{'params': netF.parameters(), 'lr': learning_rate}] + \
-                   [{'params': netB.parameters(), 'lr': learning_rate}] + \
-                   [{'params': netC.parameters(), 'lr': learning_rate}]
-
-    optimizer = optim.SGD(param_groups,learning_rate)
+    optimizer = optim.SGD(param_groups,lr=args.lr,weight_decay=1e-3,momentum=0.9,nesterov=True)
     optimizer = op_copy(optimizer)
 
     acc_init = 0
@@ -188,7 +177,11 @@ def train_source(args):
                 continue
 
             iter_num += 1
-            lr_scheduler(optimizer, iter_num=iter_num, max_iter=max_iter)
+
+            gamma=10
+            power=0.75
+            fun_decay=lambda i: (1 + gamma * i / max_iter) ** (-power)
+            scheduler = LambdaLR(optimizer, lr_lambda=[fun_decay, fun_decay, fun_decay])
 
             inputs_source, labels_source = inputs_source.cuda(), labels_source.cuda()
             outputs_source = netC(netB(netF(inputs_source)))
@@ -197,6 +190,8 @@ def train_source(args):
             optimizer.zero_grad()
             classifier_loss.backward()
             optimizer.step()
+
+            scheduler.step()
 
             if iter_num % interval_iter == 0 or iter_num == max_iter:
                 netF.eval()
@@ -294,7 +289,7 @@ def train_target(args):
                    [{'params': netB.parameters(), 'lr': args.lr}] + \
                    [{'params': netC.parameters(), 'lr': args.lr}]
 
-    optimizer = optim.SGD(param_groups,args.lr)
+    optimizer = optim.SGD(param_groups,lr=args.lr,weight_decay=1e-3,momentum=0.9,nesterov=True)
     optimizer = op_copy(optimizer)
 
     target_loader=dset_loaders["target"]
@@ -319,7 +314,6 @@ def train_target(args):
                 netB.train()
 
             iter_num += 1
-            lr_scheduler(optimizer, iter_num=iter_num, max_iter=max_iter)
 
             inputs_test = inputs_test.cuda()
             features_test = netB(netF(inputs_test))
@@ -341,9 +335,16 @@ def train_target(args):
                 im_loss = entropy_loss * args.ent_par
                 classifier_loss += im_loss
 
+            gamma = 10
+            power = 0.75
+            fun_decay = lambda i: (1 + gamma * i / max_iter) ** (-power)
+            scheduler = LambdaLR(optimizer, lr_lambda=[fun_decay, fun_decay, fun_decay])
+
             optimizer.zero_grad()
             classifier_loss.backward()
             optimizer.step()
+
+            scheduler.step()
 
             if iter_num % interval_iter == 0 or iter_num == max_iter:
                 netF.eval()
