@@ -17,10 +17,7 @@ import network
 from data_load import mnist, svhn, usps
 
 
-def op_copy(optimizer):
-    for param_group in optimizer.param_groups:
-        param_group['lr0'] = param_group['lr']
-    return optimizer
+
 
 
 def digit_load(args):
@@ -125,8 +122,8 @@ def cal_acc(loader, netF, netB, netC):
 
     all_output=torch.cat(output_list, dim=0)
     all_label=torch.cat(label_list, dim=0)
-    _, predict = torch.max(all_output, 1)
-    correct_num=torch.sum(predict.float() == all_label).item()
+    _, all_pre = torch.max(all_output, 1)
+    correct_num=torch.sum(all_pre.float() == all_label).item()
     all_num=all_label.size(0)
     accuracy = correct_num / float(all_num)
     mean_ent = torch.mean(loss.Entropy(nn.Softmax(dim=1)(all_output))).cpu().item()
@@ -154,12 +151,16 @@ def train_source(args):
                    [{'params': netC.parameters(), 'lr': args.lr}]
 
     optimizer = optim.SGD(param_groups,lr=args.lr,weight_decay=1e-3,momentum=0.9,nesterov=True)
-    optimizer = op_copy(optimizer)
 
     acc_init = 0
     max_iter = args.max_epoch * len(dset_loaders["source_tr"])
     interval_iter = max_iter // 10
     iter_num = 0
+
+    gamma = 10
+    power = 0.75
+    fun_decay = lambda i: (1 + gamma * i / max_iter) ** (-power)
+    scheduler = LambdaLR(optimizer, lr_lambda=[fun_decay, fun_decay, fun_decay])
 
     netF.train()
     netB.train()
@@ -175,11 +176,8 @@ def train_source(args):
 
             iter_num += 1
 
-            gamma=10
-            power=0.75
-            fun_decay=lambda i: (1 + gamma * i / max_iter) ** (-power)
-            scheduler = LambdaLR(optimizer, lr_lambda=[fun_decay, fun_decay, fun_decay])
 
+            # print("{:.8f}".format(scheduler.get_last_lr()[0]))
             inputs_source, labels_source = inputs_source.cuda(), labels_source.cuda()
             outputs_source = netC(netB(netF(inputs_source)))
             classifier_loss = loss.CrossEntropyLabelSmooth(num_classes=args.class_num, epsilon=args.smooth)(outputs_source,
@@ -279,7 +277,7 @@ def train_target(args):
     netC.load_state_dict(torch.load(args.modelpath))
     netC.eval()
 
-    for name, param in netC.named_parameters():
+    for param in netC.parameters():
         param.requires_grad = False
 
     param_groups = [{'params': netF.parameters(), 'lr': args.lr}] + \
@@ -287,13 +285,17 @@ def train_target(args):
                    [{'params': netC.parameters(), 'lr': args.lr}]
 
     optimizer = optim.SGD(param_groups,lr=args.lr,weight_decay=1e-3,momentum=0.9,nesterov=True)
-    optimizer = op_copy(optimizer)
 
     target_loader=dset_loaders["target"]
-    max_iter = args.max_epoch * len(dset_loaders["target"])
-    interval_iter = len(dset_loaders["target"])
+    max_iter = args.max_epoch * len(target_loader)
+    interval_iter = len(target_loader)
     # interval_iter = max_iter // args.interval
     iter_num = 0
+
+    gamma = 10
+    power = 0.75
+    fun_decay = lambda i: (1 + gamma * i / max_iter) ** (-power)
+    scheduler = LambdaLR(optimizer, lr_lambda=[fun_decay, fun_decay, fun_decay])
 
     for epoch in range(args.max_epoch):
         for step, (inputs_test, _, tar_idx) in enumerate(target_loader):
@@ -332,10 +334,7 @@ def train_target(args):
                 im_loss = entropy_loss * args.ent_par
                 classifier_loss += im_loss
 
-            gamma = 10
-            power = 0.75
-            fun_decay = lambda i: (1 + gamma * i / max_iter) ** (-power)
-            scheduler = LambdaLR(optimizer, lr_lambda=[fun_decay, fun_decay, fun_decay])
+
 
             optimizer.zero_grad()
             classifier_loss.backward()
@@ -362,14 +361,11 @@ def train_target(args):
     return netF, netB, netC
 
 
-def obtain_label(loader, netF, netB, netC, args, c=None):
+def obtain_label(loader, netF, netB, netC, args):
     start_test = True
     with torch.no_grad():
-        iter_test = iter(loader)
-        for _ in range(len(loader)):
-            data = iter_test.next()
-            inputs = data[0]
-            labels = data[1]
+        for inputs, labels in iter(loader):
+
             inputs = inputs.cuda()
             feas = netB(netF(inputs))
             outputs = netC(feas)
